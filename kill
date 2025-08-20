@@ -1,0 +1,6 @@
+#!/bin/sh -eu
+
+. "$(dirname "$(realpath "$0")")/COMMON"
+
+load_config "$1"
+cgroup kill remove
