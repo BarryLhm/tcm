@@ -10,11 +10,11 @@ on an android kernel which usually lacks of namespaces support
 - mount namespace separation to avoid mount pollution
 - cgroup management to easily kill all processes in the container
 
-### Terminology
+### Terminologies & Concepts
 
 - `root`: geteuid() == 0
-- states (booleans, not exclusive)
-`started`: the container's unique cgroup was created
+- states: (booleans, not exclusive)
+
 `running`: there's program(s) running in the container cgroup
 (and mount namespace is kept until all processes exited)
 
@@ -28,22 +28,34 @@ on an android kernel which usually lacks of namespaces support
 ### Warnings & Notices
 
 - **NO** user namespace support !!!
+
 This means you **CANNOT** have isolated `root` permission in containers,
+
 `root` in containers **FULLY** equals to `root` in host system with selinux etc. escalation
+
 Use at your **OWN RISK** !!!
 
 - **NO** pid namespace support !!
+
 This means processes in containers (espacially those running as `root`) can interact with processes on your host system (including **KILL** and debugging),
+
 init and service managers are mostly **UNSUPPORTED** (and may have **MAJOR INTERFERENCE** with the host system which may need a reboot to recover)
 
 ### Usage (may not up to date, read the code!)
-- `spawn` CONTAINER_NAME [PROG [ARGS ...]]
-put a container in `started` and `running` state
-by separating mount namespace, mount filesystems, creating cgroup, attaching the script itself to it, and executing specified program
+- `run` CONTAINER_NAME [PROG [ARGS ...]]
+
+put a container in `running` state
+by separating mount namespace, mount filesystems,
+attaching to the container cgroup, and executing specified program
+
 when PROG is not specified, print environment variables (as `env`'s behavior)
-it's currently not allowed to spawn a CONTAINER when it's in `started` state
-(an `attach` script will be added later )
+
+after all programs in the container exited, the `running` state will become 0
 
 - `kill` CONTAINER_NAME
-kick a container out of `running` and then `started` state
-by using cgroup kill controller and removing the cgroup
+kill all process that belong to the container using cgroup kill controller
+
+(turn off container's `running` state)
+
+- `status` CONTAINER_NAME
+get overall status about the container

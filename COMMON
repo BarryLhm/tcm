@@ -10,25 +10,38 @@ realprog="$(basename "$script")"
 termux_root="/data/data/com.termux/files"
 tmpdir="$termux_root/usr/tmp"
 cgroupfs="/sys/fs/cgroup"
-cgroup_dir="$cgroupfs/tcm"
-cgroup_prefix="$cgroup_dir/_"
+cgroup_master="$cgroupfs/tcm"
+cgroup_prefix="$cgroup_master/_"
 config_dir="$dir/config"
 ns_dir="$dir/ns"
+config_loaded=0
+
+container_mount()(:)
 
 load_config()
 {
+	case "$1" in
+	*/*) error "unexpected slash in container name";;
+	esac
 	cont_name="$1"
+	cgroup_dir="$cgroup_prefix$cont_name"
 	local container_description="(no description)"
 	unset container_root
 	. "$config_dir/$cont_name.conf"
 	cont_root="$container_root"
 	cont_desc="$container_description"
 	[ -d "$cont_root" ] || mkdir -o "$cont_root"
+	config_loaded=1
 }
 
-error()
+need_config() # use brackets to correctly exit
 {
-	echo "$progname: $1" >&2; return "${2-1}"
+	[ "$config_loaded" = 1 ] || error "no config loaded"
+}
+
+error() # don't use () because exit doesn't work in a subshell
+{
+	echo "$progname: $1" >&2; exit "${2-1}"
 }
 
 require()
@@ -66,14 +79,16 @@ require cmd:tput
 
 unshare_exec()
 {
+need_config
 	local prog="$1"; shift
 	[ -d "$ns_dir" ] || mkdir "$ns_dir"
 	[ -f "$ns_dir/$cont_name.mnt" ] || touch "$ns_dir/$cont_name.mnt"
-	exec unshare --mount="$ns_dir/$cont_name.mnt" -- "$prog" "$@"
+	exec unshare --mount="$ns_dir/$cont_name.mnt" -- ${DEBUG-} "$prog" "$@"
 }
 
 add_bind()
 {
+need_config
 	local src="$1"; dst="$2"; shift 2
 	[ -d "$cont_root/$dst" ] || mkdir -p "$cont_root/$dst"
 	mount "$@" -R "$src" "$cont_root/$dst"
@@ -81,6 +96,7 @@ add_bind()
 
 mount_base()
 {
+need_config
 	## suid root
 	add_bind "$cont_root" "/" -o suid,dev
 	## linux runtime
@@ -96,8 +112,16 @@ mount_android_runtime()
 	done
 }
 
+mount_fs()
+{
+need_config
+	mount_base
+	container_mount
+}
+
 switch_root()
 {
+need_config
 require cmd:busybox
 	cd "$cont_root"
 	busybox pivot_root "$cont_root" .
@@ -105,25 +129,45 @@ require cmd:busybox
 	cd /
 }
 
+echoret()
+{
+	local msg="$1" ret="${2-0}"
+	echo "$msg"
+	return "$ret"
+}
+
 cgroup()
 {
+need_config
+	local oper="$1"
 	[ -f "$cgroupfs/cgroup.stat" ] || error "cgroup unavailable"
+	[ -d "$cgroup_master" ] || mkdir "$cgroup_master"
 	[ -d "$cgroup_dir" ] || mkdir "$cgroup_dir"
-	[ -f "$cgroup_dir/cgroup.stat" ] || error "bad cgroup filesystem"
-	local cgroup_dir="$cgroup_prefix$cont_name"
-	until [ "$#" = 0 ]
-	do	case "$1" in
-		create) mkdir "$cgroup_dir";;
-		attach) echo "$$" > "$cgroup_dir/cgroup.procs";;
-		kill) echo 1 > "$cgroup_dir/cgroup.kill";;
-		remove) rmdir "$cgroup_dir";;
-		is_running) [ -d "$cgroup_dir" ];;
-		kill_all)	echo 1 > "$cgroup_dir/cgroup.kill"
-				for i in "$cgroup_dir"/*
-				do [ ! -d "$i" ] || rmdir "$1"
-				done;;
-		*) error "unknown cgroup operation $1";;
-		esac
-		shift
-	done
+	case "$oper" in
+	is_running)	[ "$(head -c 1 "$cgroup_dir/cgroup.procs")" ] && \
+			 echoret 1 || echoret 0;;
+	attach) echo "$$" > "$cgroup_dir/cgroup.procs";;
+	kill) echo 1 > "$cgroup_dir/cgroup.kill";;
+	ps) cat "$cgroup_dir/cgroup.procs";;
+	kill_all)	for i in "$cgroup_prefix"*
+			do	echo 1 > "$i/cgroup.kill"
+			done;;
+	*) error "unknown cgroup operation $1";;
+	esac
+}
+
+run_cont()
+{
+	[ "$(cgroup is_running)" = 1 ] || \
+	{
+		mount_fs
+		switch_root
+	}
+	cgroup attach
+	exec env -i TERM="$TERM" "$@"
+}
+
+kill_cont()
+{
+	cgroup kill
 }

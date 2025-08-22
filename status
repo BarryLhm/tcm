@@ -1,0 +1,11 @@
+#!/bin/sh -eu
+
+. "$(dirname "$(realpath "$0")")/COMMON"
+
+load_config "$1"
+
+echo "name: $cont_name"
+echo "states:"
+echo "    running: $(cgroup is_running)"
+echo "processes:"
+cgroup ps
