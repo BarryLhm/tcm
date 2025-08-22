@@ -13,9 +13,9 @@ on an android kernel which usually lacks of namespaces support
 ### Terminologies & Concepts
 
 - `root`: geteuid() == 0
-- states: (booleans, not exclusive)
 
-`running`: there's program(s) running in the container cgroup
+States: (booleans, not exclusive)
+- `running`: there's program(s) running in the container cgroup
 (and mount namespace is kept until all processes exited)
 
 ### Requirements
@@ -39,9 +39,26 @@ Use at your **OWN RISK** !!!
 
 This means processes in containers (espacially those running as `root`) can interact with processes on your host system (including **KILL** and debugging),
 
-init and service managers are mostly **UNSUPPORTED** (and may have **MAJOR INTERFERENCE** with the host system which may need a reboot to recover)
+init and service managers are mostly **UNSUPPORTED** (and may have **SEVERE INTERFERENCE** with the host system which may need a reboot to recover)
+
+### Files & Project Structure
+
+```
+/
+ |-COMMON: Common parts of the scripts, like a shared library
+ |-config/: Configuration directory
+ |  |-example.conf`: Configuration of container named "example"
+ |  ...
+ |-ns/: namespaces store
+ |  |-example.mnt`: mount namespace persistent store of container "example"
+ |  ...
+ |-{run, kill, status}: See "Usage" segment below
+ |-test: A simple wrapper script to test functions in "COMMON"
+ ...
+```
 
 ### Usage (may not up to date, read the code!)
+
 - `run` CONTAINER_NAME [PROG [ARGS ...]]
 
 put a container in `running` state
