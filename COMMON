@@ -21,7 +21,7 @@ container_mount()(:)
 load_config()
 {
 	case "$1" in
-	*/*) error "unexpected slash in container name";;
+	*/*|*"'"*) error "invalid container name";;
 	esac
 	cont_name="$1"
 	cgroup_dir="$cgroup_prefix$cont_name"
@@ -76,98 +76,117 @@ countdown() ### ( time/s:, [msg], [finmsg] )
 
 require cmd:tput
 [ "${COLUMNS-}" ] || COLUMNS="$(tput cols)"
+require cmd:busybox
 
-unshare_exec()
+ns()
 {
 need_config
-	local prog="$1"; shift
-	[ -d "$ns_dir" ] || mkdir "$ns_dir"
-	[ -f "$ns_dir/$cont_name.mnt" ] || touch "$ns_dir/$cont_name.mnt"
-	exec unshare --mount="$ns_dir/$cont_name.mnt" -- ${DEBUG-} "$prog" "$@"
+	local oper="$1"; shift
+	local mntns="$ns_dir/$cont_name.mnt"
+	case "$oper" in
+	open)	[ -d "$ns_dir" ] || mkdir "$ns_dir"
+		[ -f "$mntns" ] || \
+		 touch "$mntns"
+		[ "$(stat -fc "%T" "$mntns")" = "nsfs" ] || \
+		 unshare --mount="$mntns" true;;
+	drop)	while [ "$(stat -fc "%T" "$mntns")" = "nsfs" ]
+		do umount "$mntns" 2>/dev/null
+		done
+		fs remove_switched_root_flag;;
+	run|exec):
+		local prog="$1"; shift
+		local exec=
+		ns open
+		[ "$oper" != "exec" ] || exec=exec
+		$exec nsenter -m"$mntns" -- "$prog" "$@";;
+	*) error "unknown ns operation '$oper'";;
+	esac
 }
 
-add_bind()
+fs()
 {
 need_config
-	local src="$1"; dst="$2"; shift 2
-	[ -d "$cont_root/$dst" ] || mkdir -p "$cont_root/$dst"
-	mount "$@" -R "$src" "$cont_root/$dst"
+	local oper="$1"; shift
+	case "$oper" in
+	is_switched_root) cgroup is_marked switched_root;;
+	remove_switched_root_flag) cgroup unmark switched_root;;
+	switch_root):
+		[ "$(fs is_switched_root)" = 0 ] || return 0
+		cgroup mark switched_root
+		ns run sh -eu "$dir/switch_root_helper" "$cont_root";;
+	bind)	local src="$1"; dst="$2"; shift 2
+		[ "$(fs is_switched_root)" = 0 ] || return 0
+		[ -d "$cont_root/$dst" ] || mkdir -p "$cont_root/$dst"
+		ns run mount "$@" -R "$src" "$cont_root/$dst";;
+	esac
 }
 
-mount_base()
+macro()
 {
 need_config
-	## suid root
-	add_bind "$cont_root" "/" -o suid,dev
-	## linux runtime
-	for i in /proc /sys /dev
-	do add_bind "$i" "$i"
-	done
-}
-
-mount_android_runtime()
-{
-	for i in /apex/com.android.runtime /linkerconfig /system
-	do add_bind "$i" "$i"
-	done
+	local oper="$1"; shift
+	case "$oper" in
+	mount_base):
+		## suid root
+		fs bind "$cont_root" "/" -o suid,dev
+		## linux runtime
+		for i in /proc /sys /dev
+		do fs bind "$i" "$i"
+		done;;
+	mount_android_runtime):
+		for i in /apex/com.android.runtime /linkerconfig /system
+		do fs bind "$i" "$i"
+		done;;
+	esac
 }
 
 mount_fs()
 {
 need_config
-	mount_base
+	macro mount_base
 	container_mount
-}
-
-switch_root()
-{
-need_config
-require cmd:busybox
-	cd "$cont_root"
-	busybox pivot_root "$cont_root" .
-	umount -fl .
-	cd /
-}
-
-echoret()
-{
-	local msg="$1" ret="${2-0}"
-	echo "$msg"
-	return "$ret"
 }
 
 cgroup()
 {
 need_config
-	local oper="$1"
+	local oper="$1"; shift
 	[ -f "$cgroupfs/cgroup.stat" ] || error "cgroup unavailable"
 	[ -d "$cgroup_master" ] || mkdir "$cgroup_master"
 	[ -d "$cgroup_dir" ] || mkdir "$cgroup_dir"
 	case "$oper" in
-	is_running)	[ "$(head -c 1 "$cgroup_dir/cgroup.procs")" ] && \
-			 echoret 1 || echoret 0;;
+	is_running):
+		[ "$(head -c 1 "$cgroup_dir/cgroup.procs")" ] && \
+		 echo 1 || echo 0;;
 	attach) echo "$$" > "$cgroup_dir/cgroup.procs";;
 	kill) echo 1 > "$cgroup_dir/cgroup.kill";;
+	cleanup) cgroup remove_flags; rmdir "$cgroup_dir";;
 	ps) cat "$cgroup_dir/cgroup.procs";;
-	kill_all)	for i in "$cgroup_prefix"*
-			do	echo 1 > "$i/cgroup.kill"
-			done;;
-	*) error "unknown cgroup operation $1";;
+	mark) [ "$(cgroup is_marked "$1")" = 1 ] || mkdir "$cgroup_dir/_mark_$1";;
+	unmark) [ "$(cgroup is_marked "$1")" = 0 ] || rmdir "$cgroup_dir/_mark_$1";;
+	is_marked) [ -d "$cgroup_dir/_mark_$1" ] && echo 1 || echo 0;;
+	remove_flags) cgroup mark _placeholder; rmdir "$cgroup_dir/_mark_"*;;
+	kill_all):
+		for i in "$cgroup_prefix"*
+		do	echo 1 > "$i/cgroup.kill"
+		done;;
+	*) error "unknown cgroup operation '$oper'";;
 	esac
 }
 
-run_cont()
+cont()
 {
-	[ "$(cgroup is_running)" = 1 ] || \
-	{
+need_config
+	local oper="$1"; shift
+	case "$oper" in
+	run)	[ "$(cgroup is_running)" = 1 ] || ns drop
 		mount_fs
-		switch_root
-	}
-	cgroup attach
-	exec env -i TERM="$TERM" "$@"
-}
-
-kill_cont()
-{
-	cgroup kill
+		fs switch_root
+		cgroup attach
+		ns exec env -i TERM="$TERM" "$@";;
+	kill)	cgroup kill
+		cgroup cleanup
+		ns drop;;
+	*) error "unknown containter operation '$oper'";;
+	esac
 }

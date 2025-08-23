@@ -4,4 +4,4 @@
 
 load_config "$1"
 
-kill_cont
+cont kill

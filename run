@@ -4,7 +4,5 @@
 
 load_config "$1"
 
-[ "${second_stage-}" = 1 ] || second_stage=1 unshare_exec "$script" "$@"
-
 shift
-run_cont "$@"
+cont run "$@"
