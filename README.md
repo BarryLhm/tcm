@@ -47,15 +47,35 @@ init and service managers are mostly **UNSUPPORTED** (and may have **SEVERE INTE
 /
  |-COMMON: Common parts of the scripts, like a shared library
  |-config/: Configuration directory
- |  |-example.conf`: Configuration of container named "example"
+ |  |-example.conf`: Configuration of container named "example", see Configuration
  |  ...
  |-ns/: namespaces store
  |  |-example.mnt`: mount namespace persistent store of container "example"
  |  ...
- |-{run, kill, status}: See "Usage" segment below
+ |-{run, kill, status}: See "Usage" below
  |-test: A simple wrapper script to test functions in "COMMON"
  ...
 ```
+
+### Configure
+- config/CONTAINER_NAME.conf:
+A shell script defining container related variables and functions
+
+Format: (Don't add anything except fields below and follow posix shell syntax!)
+(You can certainly do anything **IF YOU HAVE READ THE CODES**, and I am **NOT RESPONSIBLE FOR ANY DAMAGE TO ANYTHING/ANYBODY**)
+
+(Fields with * are mandatory)
+```
+  container_desc="CONTAINER" # Description
+* container_root"/path/to/rootfs" # Container rootfs dir, please manually install system
+  container_mount() # Custom mounts
+  {
+      fs bind "/host/path" "/target/path/relative/to/container/root"
+      ...
+  }
+```
+Changes to mounts will take effect after all processes in container exited
+(You can use `kill` to force it)
 
 ### Usage (may not up to date, read the code!)
 
