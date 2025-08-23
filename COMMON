@@ -7,6 +7,7 @@ dir="$(dirname "$script")"
 progname="$(basename "$0")"
 realprog="$(basename "$script")"
 
+busybox="$dir/busybox"
 termux_root="/data/data/com.termux/files"
 tmpdir="$termux_root/usr/tmp"
 cgroupfs="/sys/fs/cgroup"
@@ -15,6 +16,10 @@ cgroup_prefix="$cgroup_master/_"
 config_dir="$dir/config"
 ns_dir="$dir/ns"
 config_loaded=0
+lock_fd=114
+lock_file="$dir/COMMON"
+lock_open=0
+lock_get=0
 
 container_mount()(:)
 
@@ -44,23 +49,6 @@ error() # don't use () because exit doesn't work in a subshell
 	echo "$progname: $1" >&2; exit "${2-1}"
 }
 
-require()
-{
-	notfound()
-	{
-		error "${1-"error: need $i, please check system environment"}"
-	}
-	for i in "$@"
-	do	case "$1" in
-		dir:*) [ -d "${i#dir:}" ] || notfound;;
-		file:*) [ -f "${i#file:}" ] || notfound;;
-		fsentry:*) [ -e "${i#fsentry:}" ] || notfound;;
-		cmd:*) type "${i#cmd:}" >/dev/null 2>&1 || notfound;;
-		*) notfound "unknown requirement: $i";;
-		esac
-	done
-}
-
 countdown() ### ( time/s:, [msg], [finmsg] )
 {
 	local time="$1" msg="${2-}" finmsg="${3-}"
@@ -72,11 +60,52 @@ countdown() ### ( time/s:, [msg], [finmsg] )
 	[ "$finmsg" = "" ] || echo "$finmsg"
 }
 
-[ "$(id -u)" = 0 ] || error "need root privilege"
+check_busybox()
+{
+	[ -f "$busybox" ] || error "Please copy magisk busybox to repo root"
+	[ -x "$busybox" ] || chmod +x "$busybox"
+	"$busybox" sh -ec "set -o standalone" || error "busybox version unsupported"
+}
 
-require cmd:tput
-[ "${COLUMNS-}" ] || COLUMNS="$(tput cols)"
-require cmd:busybox
+lock()
+{
+	local oper="$1"
+	case "$oper" in
+	open)	[ "$lock_open" != 1 ] || return 0
+		eval "exec $lock_fd<>"'"$lock_file"'
+		lock_open=1;;
+	get)	[ "$lock_get" != 1 ] || return 0
+		flock -nE 41 "$lock_fd" || \
+		{
+			[ "$?" = 41 ] || error "failed to get lock"
+			echo "lock is get by another process, waiting..."
+		}
+		flock "$lock_fd" || error "failed to get lock"
+		lock_get=1;;
+	release):
+		[ "$lock_get" = 1 ] || return 0
+		flock -u "$lock_fd"
+		lock_get=0;;
+	close)	[ "$lock_open" = 1 ] || return 0
+		eval "exec $lock_fd<&-"
+		lock_get=0 lock_open=0;;
+	esac
+}
+
+execute()
+{
+	[ "$lock_get" != 1 ] || lock close
+	exec "$@"
+}
+
+## end of defs
+
+[ "$(id -u)" = 0 ] || error "need root privilege"
+check_busybox
+(set -o standalone 2>/dev/null) || execute "$busybox" sh -eu "$script" "$@"
+
+lock open
+lock get
 
 ns()
 {
@@ -97,7 +126,7 @@ need_config
 		local prog="$1"; shift
 		local exec=
 		ns open
-		[ "$oper" != "exec" ] || exec=exec
+		[ "$oper" != "exec" ] || exec=execute
 		$exec nsenter -m"$mntns" -- "$prog" "$@";;
 	*) error "unknown ns operation '$oper'";;
 	esac
@@ -113,7 +142,7 @@ need_config
 	switch_root):
 		[ "$(fs is_switched_root)" = 0 ] || return 0
 		cgroup mark switched_root
-		ns run sh -eu "$dir/switch_root_helper" "$cont_root";;
+		ns run "$busybox" sh -euo standalone "$dir/switch_root_helper" "$cont_root";;
 	bind)	local src="$1"; dst="$2"; shift 2
 		[ "$(fs is_switched_root)" = 0 ] || return 0
 		[ -d "$cont_root/$dst" ] || mkdir -p "$cont_root/$dst"

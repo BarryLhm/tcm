@@ -1,10 +1,5 @@
-#!/bin/sh -eu
-
-. "$(dirname "$(realpath "$0")")/COMMON"
-
-root="$1"
-
-cd "$root"
-busybox pivot_root "$root" .
+set -o standalone
+cd "$1"
+busybox pivot_root "$1" .
 umount -fl .
 cd /

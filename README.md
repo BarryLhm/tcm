@@ -24,6 +24,8 @@ States: (booleans, not exclusive)
 - mount namespace (Android needs this so ought to be available)
 - cgroup (either v1 or v2) mounted on /sys/fs/cgroup
  (this is also needed by Android system)
+- `busybox` with standalone mode support
+ (e.g. busybox from magisk/kernelsu)
 
 ### Warnings & Notices
 
@@ -32,6 +34,9 @@ States: (booleans, not exclusive)
 This means you **CANNOT** have isolated `root` permission in containers,
 
 `root` in containers **FULLY** equals to `root` in host system with selinux etc. escalation
+
+for enhanced security please install `uid_placeholder.apk`
+and add a user with the same uid in the container
 
 Use at your **OWN RISK** !!!
 
@@ -46,12 +51,15 @@ init and service managers are mostly **UNSUPPORTED** (and may have **SEVERE INTE
 ```
 /
  |-COMMON: Common parts of the scripts, like a shared library
+ |-busybox(not included in repo): busybox binary from magisk/kernelsu etc.
+ |-uid_placeholder.apk: An empty apk to create an unprivileged uid
  |-config/: Configuration directory
  |  |-example.conf`: Configuration of container named "example", see Configuration
  |  ...
  |-ns/: namespaces store
  |  |-example.mnt`: mount namespace persistent store of container "example"
  |  ...
+ |-switch_root_helper: A simple script to perform pivot_root in container's mnt ns
  |-{run, kill, status}: See "Usage" below
  |-test: A simple wrapper script to test functions in "COMMON"
  ...
@@ -78,6 +86,9 @@ Changes to mounts will take effect after all processes in container exited
 (You can use `kill` to force it)
 
 ### Usage (may not up to date, read the code!)
+
+# You need to manually copy `busybox` from /data/adb/{magisk, ksu, ...}/bin/busybox
+to the place mentioned above
 
 - `run` CONTAINER_NAME [PROG [ARGS ...]]
 
