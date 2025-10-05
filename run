@@ -1,6 +1,6 @@
-#!/bin/sh -eu
+#!/data/data/com.termux/files/usr/bin/zsh -eu
 
-. "$(dirname "$(realpath "$0")")/COMMON"
+. "$(dirname "$(realpath "$0")")/COMMON" "$0"
 
 load_config "$1"
 

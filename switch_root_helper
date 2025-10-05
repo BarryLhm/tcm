@@ -1,5 +1,0 @@
-set -o standalone
-cd "$1"
-busybox pivot_root "$1" .
-umount -fl .
-cd /

@@ -1,133 +1,114 @@
-#!/bin/sh ## not executable, just for syntax highlighting
+#!/data/data/com.termux/files/usr/bin/zsh -eu
+## not executable, just for syntax highlighting
+
+PS4='[%D{%6.}] '
+
+set -eu
+
+[ "${ZSH_VERSION-}" ] || \
+{
+        echo "[Error] Zsh required"
+        echo "PS: This script has specfied Zsh as its runtime,"
+        echo "please execute this script directly as a program."
+        exit 1
+}
+
+zmodload zsh/system
+setopt nullglob
 
 unset LD_PRELOAD
 
-script="$(realpath "$0")"
-dir="$(dirname "$script")"
-progname="$(basename "$0")"
-realprog="$(basename "$script")"
+COMMON="$(realpath $0)"
+DIR=${COMMON%/*}
+script="$(realpath $1)"
+progname=$script:t
 
-busybox="$dir/busybox"
-termux_root="/data/data/com.termux/files"
-tmpdir="$termux_root/usr/tmp"
-cgroupfs="/sys/fs/cgroup"
-cgroup_master="$cgroupfs/tcm"
-cgroup_prefix="$cgroup_master/_"
-config_dir="$dir/config"
-ns_dir="$dir/ns"
+T_ROOT=/data/data/com.termux/files
+TMP_D=$T_ROOT/usr/tmp
+CG_FS=/sys/fs/cgroup
+CG_HOST=$CG_FS/_tcm
+CONF_D=$DIR/config
+NS_D=$DIR/ns
 config_loaded=0
-lock_fd=114
-lock_file="$dir/COMMON"
-lock_open=0
-lock_get=0
+L_FD=
+L_FILE=$DIR/COMMON
+L_GET=0
 
 container_mount()(:)
 
 load_config()
 {
-	case "$1" in
+	case $1 in
 	*/*|*"'"*) error "invalid container name";;
 	esac
-	cont_name="$1"
-	cgroup_dir="$cgroup_prefix$cont_name"
+	C_NAME=$1
+	cgroup_dir=$CG_HOST/_$C_NAME
 	local container_description="(no description)"
 	unset container_root
-	. "$config_dir/$cont_name.conf"
-	cont_root="$container_root"
-	cont_desc="$container_description"
-	[ -d "$cont_root" ] || mkdir -o "$cont_root"
+	. $CONF_D/$C_NAME.conf
+	C_ROOT=$container_root
+	C_DESC=$container_description
+	[[ -d $C_ROOT ]] || mkdir -o $C_ROOT
 	config_loaded=1
 }
 
 need_config() # use brackets to correctly exit
 {
-	[ "$config_loaded" = 1 ] || error "no config loaded"
+	[[ $config_loaded = 1 ]] || error "no config loaded"
 }
 
 error() # don't use () because exit doesn't work in a subshell
 {
-	echo "$progname: $1" >&2; exit "${2-1}"
+	echo "$progname: $1" >&2; exit ${2-1}
 }
 
 countdown() ### ( time/s:, [msg], [finmsg] )
 {
-	local time="$1" msg="${2-}" finmsg="${3-}"
-	while [ "$time" -gt 0 ]
-	do	echo "$msg$time"
+	local time=$1 msg=${2-} finmsg=${3-}
+	while [[ $time -gt 0 ]]
+	do	echo $msg$time
 		sleep 1
-		time="$((time - 1))"
+		let --time
 	done
-	[ "$finmsg" = "" ] || echo "$finmsg"
-}
-
-check_busybox()
-{
-	[ -f "$busybox" ] || error "Please copy magisk busybox to repo root"
-	[ -x "$busybox" ] || chmod +x "$busybox"
-	"$busybox" sh -ec "set -o standalone" || error "busybox version unsupported"
+	[[ -n $finmsg ]] || echo $finmsg
 }
 
 lock()
 {
-	local oper="$1"
-	case "$oper" in
-	open)	[ "$lock_open" != 1 ] || return 0
-		eval "exec $lock_fd<>"'"$lock_file"'
-		lock_open=1;;
-	get)	[ "$lock_get" != 1 ] || return 0
-		flock -nE 41 "$lock_fd" || \
+	local oper=$1
+	case $oper in
+	get)	[[ $L_GET = 0 ]] || return 0
+		zsystem flock -t 0 -f L_FD $L_FILE || \
 		{
-			[ "$?" = 41 ] || error "failed to get lock"
-			echo "lock is get by another process, waiting..."
+			[[ $? = 2 ]] || error "failed to get lock"
+			echo "lock is held by another process, waiting..."
 		}
-		flock "$lock_fd" || error "failed to get lock"
-		lock_get=1;;
-	release):
-		[ "$lock_get" = 1 ] || return 0
-		flock -u "$lock_fd"
-		lock_get=0;;
-	close)	[ "$lock_open" = 1 ] || return 0
-		eval "exec $lock_fd<&-"
-		lock_get=0 lock_open=0;;
+		zsystem flock -i 0.5 -f L_FD $L_FILE
+		L_GET=1;;
+	drop):	[[ $L_GET = 1 ]] || return 0
+		zsystem flock -u $L_FD || error "cannot drop lock"
+		L_GET=0;;
 	esac
 }
-
-execute()
-{
-	[ "$lock_get" != 1 ] || lock close
-	exec "$@"
-}
-
-## end of defs
-
-[ "$(id -u)" = 0 ] || error "need root privilege"
-check_busybox
-(set -o standalone 2>/dev/null) || execute "$busybox" sh -eu "$script" "$@"
-
-lock open
-lock get
 
 ns()
 {
 need_config
-	local oper="$1"; shift
-	local mntns="$ns_dir/$cont_name.mnt"
-	case "$oper" in
-	open)	[ -d "$ns_dir" ] || mkdir "$ns_dir"
-		[ -f "$mntns" ] || \
-		 touch "$mntns"
-		[ "$(stat -fc "%T" "$mntns")" = "nsfs" ] || \
-		 unshare --mount="$mntns" true;;
-	drop)	while [ "$(stat -fc "%T" "$mntns")" = "nsfs" ]
-		do umount "$mntns" 2>/dev/null
+	local oper=$1 mntns=$NS_D/$C_NAME.mnt; shift
+	case $oper in
+	open)	[[ -d $NS_D ]] || mkdir $NS_D
+		[[ -f $mntns ]] || touch $mntns
+		[[ "$(stat -fc %T $mntns)" = nsfs ]] || \
+		 unshare --mount=$mntns true;;
+	drop)	while [[ "$(stat -fc %T $mntns)" = nsfs ]]
+		do umount $mntns 2>/dev/null
 		done
 		fs remove_switched_root_flag;;
 	run|exec):
-		local prog="$1"; shift
-		local exec=
+		local prog=$1 exec=; shift
 		ns open
-		[ "$oper" != "exec" ] || exec=execute
-		$exec nsenter -m"$mntns" -- "$prog" "$@";;
+		[[ $oper = run ]] || exec=exec
+		$=exec nsenter -m$mntns -- $prog $@;;
 	*) error "unknown ns operation '$oper'";;
 	esac
 }
@@ -135,36 +116,35 @@ need_config
 fs()
 {
 need_config
-	local oper="$1"; shift
-	case "$oper" in
+	local oper=$1; shift
+	case $oper in
 	is_switched_root) cgroup is_marked switched_root;;
 	remove_switched_root_flag) cgroup unmark switched_root;;
 	switch_root):
-		[ "$(fs is_switched_root)" = 0 ] || return 0
-		cgroup mark switched_root
-		ns run "$busybox" sh -euo standalone "$dir/switch_root_helper" "$cont_root";;
-	bind)	local src="$1"; dst="$2"; shift 2
-		[ "$(fs is_switched_root)" = 0 ] || return 0
-		[ -d "$cont_root/$dst" ] || mkdir -p "$cont_root/$dst"
-		ns run mount "$@" -R "$src" "$cont_root/$dst";;
+		[[ "$(fs is_switched_root)" = 0 ]] || return 0
+		cgroup mark switched_root;;
+	bind)	local src=$1; dst=$2; shift 2
+		[[ "$(fs is_switched_root)" = 0 ]] || return 0
+		[[ -d $C_ROOT/$dst ]] || mkdir -p $C_ROOT/$dst
+		ns run mount $@ -R $src $C_ROOT/$dst;;
 	esac
 }
 
 macro()
 {
 need_config
-	local oper="$1"; shift
-	case "$oper" in
+	local oper=$1; shift
+	case $oper in
 	mount_base):
 		## suid root
-		fs bind "$cont_root" "/" -o suid,dev
+		fs bind $C_ROOT / -o suid,dev
 		## linux runtime
 		for i in /proc /sys /dev
-		do fs bind "$i" "$i"
+		do fs bind $i $i
 		done;;
 	mount_android_runtime):
 		for i in /apex/com.android.runtime /linkerconfig /system
-		do fs bind "$i" "$i"
+		do fs bind $i $i
 		done;;
 	esac
 }
@@ -179,25 +159,25 @@ need_config
 cgroup()
 {
 need_config
-	local oper="$1"; shift
-	[ -f "$cgroupfs/cgroup.stat" ] || error "cgroup unavailable"
-	[ -d "$cgroup_master" ] || mkdir "$cgroup_master"
-	[ -d "$cgroup_dir" ] || mkdir "$cgroup_dir"
-	case "$oper" in
+	local oper=$1; shift
+	[[ -f $CG_FS/cgroup.stat ]] || error "cgroup unavailable"
+	[[ -d $CG_HOST ]] || mkdir $CG_HOST
+	[[ -d $cgroup_dir ]] || mkdir $cgroup_dir
+	case $oper in
 	is_running):
-		[ "$(head -c 1 "$cgroup_dir/cgroup.procs")" ] && \
+		[ "$(head -c 1 $cgroup_dir/cgroup.procs)" ] && \
 		 echo 1 || echo 0;;
-	attach) echo "$$" > "$cgroup_dir/cgroup.procs";;
-	kill) echo 1 > "$cgroup_dir/cgroup.kill";;
-	cleanup) cgroup remove_flags; rmdir "$cgroup_dir";;
-	ps) cat "$cgroup_dir/cgroup.procs";;
-	mark) [ "$(cgroup is_marked "$1")" = 1 ] || mkdir "$cgroup_dir/_mark_$1";;
-	unmark) [ "$(cgroup is_marked "$1")" = 0 ] || rmdir "$cgroup_dir/_mark_$1";;
-	is_marked) [ -d "$cgroup_dir/_mark_$1" ] && echo 1 || echo 0;;
-	remove_flags) cgroup mark _placeholder; rmdir "$cgroup_dir/_mark_"*;;
+	attach) echo $$ > $cgroup_dir/cgroup.procs;;
+	kill) echo 1 > $cgroup_dir/cgroup.kill;;
+	cleanup) cgroup remove_flags; rmdir $cgroup_dir;;
+	ps) cat $cgroup_dir/cgroup.procs;;
+	mark) [[ -d $cgroup_dir/_mark_$1 ]] || mkdir $cgroup_dir/_mark_$1;;
+	unmark) [[ ! -d $cgroup_dir/_mark_$1 ]] || rmdir $cgroup_dir/_mark_$1;;
+	is_marked) [[ -d $cgroup_dir/_mark_$1 ]] && echo 1 || echo 0;;
+	remove_flags) rmdir $cgroup_dir/_mark_*;;
 	kill_all):
-		for i in "$cgroup_prefix"*
-		do	echo 1 > "$i/cgroup.kill"
+		for i in $CG_HOST/_*
+		do	echo 1 > $i/cgroup.kill
 		done;;
 	*) error "unknown cgroup operation '$oper'";;
 	esac
@@ -206,16 +186,22 @@ need_config
 cont()
 {
 need_config
-	local oper="$1"; shift
-	case "$oper" in
-	run)	[ "$(cgroup is_running)" = 1 ] || ns drop
+	local oper=$1; shift
+	case $oper in
+	run)	[[ "$(cgroup is_running)" = 1 ]] || ns drop
 		mount_fs
 		fs switch_root
 		cgroup attach
-		ns exec env -i TERM="$TERM" "$@";;
+		ns exec chroot $C_ROOT /bin/env -i TERM=$TERM $@;;
 	kill)	cgroup kill
 		cgroup cleanup
 		ns drop;;
 	*) error "unknown containter operation '$oper'";;
 	esac
 }
+
+# end of defs
+
+[[ "$(id -u)" = 0 ]] || error "need root privilege"
+
+lock get
